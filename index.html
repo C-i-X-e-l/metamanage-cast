@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sonos MetaManage – Now Playing</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+<style>
+  :root {
+    --fg: #f5f5f7;
+    --fg-dim: rgba(245, 245, 247, 0.62);
+    --accent: #e8b04a;
+    --track: rgba(255, 255, 255, 0.18);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #000; color: var(--fg);
+    font-family: "Google Sans", Roboto, "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden;
+  }
+
+  /* Blurred album-art backdrop */
+  #backdrop {
+    position: fixed; inset: -8%;
+    background-size: cover; background-position: center;
+    filter: blur(60px) saturate(1.3) brightness(0.45);
+    transition: background-image 1s ease, opacity 1s ease;
+    opacity: 0;
+  }
+  #backdrop.show { opacity: 1; }
+  #shade {
+    position: fixed; inset: 0;
+    background: radial-gradient(ellipse at 30% 50%, rgba(0,0,0,0.1), rgba(0,0,0,0.65));
+  }
+
+  /* Layout: TV safe area is ~5% on each edge */
+  #stage {
+    position: relative; z-index: 1;
+    height: 100%;
+    padding: 6vh 6vw;
+    display: flex; align-items: center; gap: 5vw;
+    transition: opacity 1.5s ease, transform 30s linear;
+  }
+  #stage.dimmed { opacity: 0.35; }
+
+  #art-wrap {
+    flex: 0 0 auto;
+    width: min(70vh, 42vw); aspect-ratio: 1 / 1;
+    border-radius: 2vh; overflow: hidden;
+    box-shadow: 0 3vh 8vh rgba(0,0,0,0.6);
+    background: #1b1b1f;
+    position: relative;
+  }
+  #art {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+    opacity: 0; transition: opacity 0.8s ease;
+  }
+  #art.show { opacity: 1; }
+  /* Vinyl fallback, like SonosAlbumArt's placeholder */
+  #vinyl {
+    position: absolute; inset: 12%;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle, var(--accent) 0 9%, #111 9.5% 11%, transparent 11.5%),
+      repeating-radial-gradient(circle, #1a1a1a 0 1.2%, #232323 1.2% 2.4%);
+    transition: opacity 0.8s ease;
+  }
+  #art.show + #vinyl { opacity: 0; }
+
+  #meta { flex: 1 1 auto; min-width: 0; }
+  #room {
+    font-size: 2.4vh; letter-spacing: 0.25em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 3vh;
+    display: flex; align-items: center; gap: 1.2vh;
+  }
+  #state-dot {
+    width: 1.3vh; height: 1.3vh; border-radius: 50%; background: var(--accent);
+  }
+  #state-dot.paused { background: transparent; border: 0.25vh solid var(--accent); }
+  #title {
+    font-size: 7vh; font-weight: 600; line-height: 1.1;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  #artist { font-size: 4vh; margin-top: 2vh; color: var(--fg); opacity: 0.9;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #album { font-size: 3vh; margin-top: 1vh; color: var(--fg-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  #progress { margin-top: 6vh; }
+  #bar { height: 0.8vh; border-radius: 0.4vh; background: var(--track); overflow: hidden; }
+  #fill { height: 100%; width: 0%; background: var(--fg); border-radius: 0.4vh; }
+  #times {
+    display: flex; justify-content: space-between;
+    margin-top: 1.5vh; font-size: 2.4vh; color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  #progress.live #bar, #progress.live #times .total { visibility: hidden; }
+
+  #chips { margin-top: 4vh; display: flex; gap: 1.5vh; font-size: 2.2vh; }
+  .chip {
+    padding: 0.8vh 2vh; border-radius: 3vh;
+    border: 0.2vh solid rgba(255,255,255,0.25); color: var(--fg-dim);
+    display: none;
+  }
+  .chip.on { display: inline-block; border-color: var(--accent); color: var(--accent); }
+
+  /* Waiting screen before the phone sends anything */
+  #waiting {
+    position: fixed; inset: 0; z-index: 2;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3vh;
+    background: #000; transition: opacity 0.8s ease;
+    font-size: 3vh; color: var(--fg-dim);
+  }
+  #waiting.hide { opacity: 0; pointer-events: none; }
+  #waiting .logo { font-size: 5vh; color: var(--fg); font-weight: 600; }
+</style>
+</head>
+<body>
+  <div id="backdrop"></div>
+  <div id="shade"></div>
+
+  <main id="stage">
+    <div id="art-wrap">
+      <img id="art" alt="">
+      <div id="vinyl"></div>
+    </div>
+    <section id="meta">
+      <div id="room"><span id="state-dot"></span><span id="room-name"></span></div>
+      <div id="title"></div>
+      <div id="artist"></div>
+      <div id="album"></div>
+      <div id="progress">
+        <div id="bar"><div id="fill"></div></div>
+        <div id="times"><span class="elapsed">0:00</span><span class="total">0:00</span></div>
+      </div>
+      <div id="chips">
+        <span class="chip" id="chip-shuffle">Shuffle</span>
+        <span class="chip" id="chip-repeat">Repeat</span>
+      </div>
+    </section>
+  </main>
+
+  <div id="waiting">
+    <div class="logo">Sonos MetaManage</div>
+    <div>Waiting for Now Playing…</div>
+  </div>
+
+<script>
+  // Must match NowPlayingCastPublisher.NAMESPACE on the Android side.
+  const NAMESPACE = 'urn:x-cast:cixel.metamanage';
+  // Bump when this file changes; the app can ask for it with {"type":"ping"}.
+  const RECEIVER_VERSION = 2;
+  // Dim the screen after this long paused/stopped (reduces burn-in on OLED TVs).
+  const DIM_AFTER_IDLE_MS = 5 * 60 * 1000;
+
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    backdrop: $('backdrop'), stage: $('stage'), art: $('art'),
+    roomName: $('room-name'), stateDot: $('state-dot'),
+    title: $('title'), artist: $('artist'), album: $('album'),
+    progress: $('progress'), fill: $('fill'),
+    elapsed: document.querySelector('#times .elapsed'),
+    total: document.querySelector('#times .total'),
+    shuffle: $('chip-shuffle'), repeat: $('chip-repeat'),
+    waiting: $('waiting'),
+  };
+
+  let state = null;          // last "state" message
+  let receivedAt = 0;        // local time the state arrived (avoids phone/TV clock skew)
+  let currentArtKey = null;  // trackKey of the art currently shown
+  let idleSince = null;
+
+  function fmt(ms) {
+    if (!isFinite(ms) || ms < 0) ms = 0;
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+    return (h > 0 ? h + ':' : '') + mm + ':' + String(sec).padStart(2, '0');
+  }
+
+  function isPlaying() {
+    return state && (state.transportState === 'PLAYING' || state.transportState === 'TRANSITIONING');
+  }
+
+  function currentPositionMs() {
+    if (!state) return 0;
+    let pos = state.positionMs || 0;
+    if (isPlaying()) pos += Date.now() - receivedAt;
+    if (state.durationMs > 0) pos = Math.min(pos, state.durationMs);
+    return pos;
+  }
+
+  function applyState(msg) {
+    const trackChanged = !state || state.trackKey !== msg.trackKey;
+    state = msg;
+    receivedAt = Date.now();
+
+    el.waiting.classList.add('hide');
+    el.roomName.textContent = msg.room || '';
+    el.title.textContent = msg.title || '';
+    el.artist.textContent = msg.artist || '';
+    el.album.textContent = msg.album || '';
+    el.stateDot.classList.toggle('paused', !isPlaying());
+    el.shuffle.classList.toggle('on', !!msg.shuffle);
+    el.repeat.classList.toggle('on', !!msg.repeat);
+    // Radio / streams have no duration: hide the bar, keep the elapsed counter.
+    el.progress.classList.toggle('live', !(msg.durationMs > 0));
+
+    if (trackChanged && currentArtKey !== msg.trackKey) {
+      // Art for the new track arrives in a separate "art" message.
+      el.art.classList.remove('show');
+      el.backdrop.classList.remove('show');
+    }
+
+    idleSince = isPlaying() ? null : (idleSince || Date.now());
+    tick();
+  }
+
+  function applyArt(msg) {
+    if (state && msg.trackKey !== state.trackKey) return; // stale art for an old track
+    const url = 'data:' + (msg.mime || 'image/jpeg') + ';base64,' + msg.data;
+    currentArtKey = msg.trackKey;
+    el.art.onload = () => el.art.classList.add('show');
+    el.art.src = url;
+    el.backdrop.style.backgroundImage = 'url("' + url + '")';
+    el.backdrop.classList.add('show');
+  }
+
+  function clearAll() {
+    state = null; currentArtKey = null; idleSince = null;
+    el.art.classList.remove('show');
+    el.backdrop.classList.remove('show');
+    el.waiting.classList.remove('hide');
+  }
+
+  function tick() {
+    if (state) {
+      const pos = currentPositionMs();
+      el.elapsed.textContent = fmt(pos);
+      el.total.textContent = fmt(state.durationMs);
+      el.fill.style.width = state.durationMs > 0 ? (100 * pos / state.durationMs) + '%' : '0%';
+    }
+    el.stage.classList.toggle('dimmed', !!idleSince && Date.now() - idleSince > DIM_AFTER_IDLE_MS);
+  }
+  setInterval(tick, 500);
+
+  // --- Cast receiver wiring -------------------------------------------------
+  const context = cast.framework.CastReceiverContext.getInstance();
+
+  context.addCustomMessageListener(NAMESPACE, (event) => {
+    const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+    switch (msg.type) {
+      // Messages mode: the phone pushes everything over the Cast channel (reliable on Nest Hubs).
+      case 'state': applyState(msg); break;
+      case 'art':   applyArt(msg);   break;
+      case 'clear': clearAll();      break;
+
+      // Close this receiver (returns the device to its home screen).
+      case 'stop':  context.stop();  break;
+
+      // Navigate mode: open the phone-served page full-screen, DashCast-style. Kept so the
+      // app can use the same page-polling flow on devices that allow it, without republishing.
+      case 'navigate':
+        if (typeof msg.url === 'string' && /^http:\/\//.test(msg.url)) {
+          el.waiting.querySelector('div:last-child').textContent = 'Opening Now Playing…';
+          setTimeout(() => { window.location.href = msg.url; }, 300);
+        }
+        break;
+
+      // Lets the app check which receiver version is deployed.
+      case 'ping':
+        context.sendCustomMessage(NAMESPACE, event.senderId,
+          { type: 'pong', version: RECEIVER_VERSION, modes: ['messages', 'navigate'] });
+        break;
+    }
+  });
+
+  const options = new cast.framework.CastReceiverOptions();
+  options.customNamespaces = { [NAMESPACE]: cast.framework.system.MessageType.JSON };
+  options.disableIdleTimeout = true;   // we never play media, so don't let the receiver time out
+  options.skipPlayersLoad = true;      // no video/audio player needed
+  options.statusText = 'Sonos MetaManage';
+  options.maxInactivity = 60;          // tolerate a phone that briefly misses heartbeats (default is 10 s)
+  context.start(options);
+</script>
+</body>
+</html>
