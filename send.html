@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PeteCast · Send</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Desktop Chrome sender for testing PeteCast. Host it next to the receiver
+  (https://c-i-x-e-l.github.io/petecast/send.html) — Cast senders must be served over https.
+-->
+<style>
+  :root { --navy-0:#0B1120; --navy-1:#0F172A; --navy-2:#1E293B; --amber:#F59E0B; --fg:#F8FAFC; --dim:rgba(248,250,252,.62); }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center;
+    background: radial-gradient(ellipse at 50% 30%, var(--navy-2), var(--navy-1) 55%, var(--navy-0));
+    color: var(--fg); font: 16px/1.5 "Google Sans", Roboto, system-ui, sans-serif; }
+  main { width:min(560px, 92vw); }
+  h1 { font-size: 40px; margin: 0 0 4px; letter-spacing:-.02em; } h1 span { color: var(--amber); }
+  p.sub { color: var(--dim); margin: 0 0 24px; }
+  label { display:block; font-size: 13px; color: var(--dim); margin: 16px 0 6px; }
+  input, select { width:100%; padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,.15);
+    background: rgba(255,255,255,.06); color: var(--fg); font: inherit; }
+  .row { display:flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+  button { padding: 12px 18px; border-radius: 10px; border: 0; font: inherit; font-weight: 600; cursor: pointer; }
+  .primary { background: var(--amber); color: #1a1205; }
+  .ghost { background: rgba(255,255,255,.08); color: var(--fg); }
+  google-cast-launcher { width: 40px; height: 40px; --connected-color: var(--amber); --disconnected-color: var(--fg); cursor: pointer; }
+  #log { margin-top: 20px; font: 13px/1.5 ui-monospace, Consolas, monospace; color: var(--dim); white-space: pre-wrap; min-height: 3em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pete<span>Cast</span></h1>
+  <p class="sub">Send a page to a Cast device. Click the Cast icon to pick a device, then send.</p>
+
+  <google-cast-launcher></google-cast-launcher>
+
+  <label for="url">Address</label>
+  <input id="url" placeholder="https://example.com or http://192.168.1.20:8123/…">
+
+  <label for="mode">Mode</label>
+  <select id="mode">
+    <option value="frame">Frame — https page inside PeteCast (stays controllable)</option>
+    <option value="navigate">Navigate — full-screen page (http LAN OK; PeteCast is replaced)</option>
+  </select>
+
+  <label for="reload">Frame: reload every (seconds, 0 = never)</label>
+  <input id="reload" type="number" min="0" value="0">
+
+  <div class="row">
+    <button class="primary" id="send">Send</button>
+    <button class="ghost" id="ping">Ping</button>
+    <button class="ghost" id="idle">Idle</button>
+    <button class="ghost" id="stop">Stop</button>
+  </div>
+  <div id="log"></div>
+</main>
+
+<script>
+  const APP_ID = '61ADD7C7';
+  const NS = 'urn:x-cast:petecast';
+  const log = (m) => { document.getElementById('log').textContent = m; };
+
+  window['__onGCastApiAvailable'] = (ok) => {
+    if (!ok) { log('Cast API unavailable — use desktop Chrome.'); return; }
+    const ctx = cast.framework.CastContext.getInstance();
+    ctx.setOptions({ receiverApplicationId: APP_ID, autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED });
+    ctx.addEventListener(cast.framework.CastContextEventType.SESSION_STATE_CHANGED, (e) => {
+      log('Session: ' + e.sessionState);
+      const s = ctx.getCurrentSession();
+      if (s && e.sessionState === 'SESSION_STARTED') {
+        s.addMessageListener(NS, (_ns, msg) => log('Receiver says: ' + msg));
+      }
+    });
+  };
+
+  function sendMsg(obj) {
+    const s = cast.framework.CastContext.getInstance().getCurrentSession();
+    if (!s) { log('Pick a device with the Cast icon first.'); return; }
+    s.sendMessage(NS, obj).then(() => log('Sent: ' + JSON.stringify(obj)), (err) => log('Error: ' + err));
+  }
+
+  document.getElementById('send').onclick = () => {
+    const url = document.getElementById('url').value.trim();
+    if (!/^https?:\/\//i.test(url)) { log('Enter an http(s) address.'); return; }
+    const mode = document.getElementById('mode').value;
+    const reload = parseInt(document.getElementById('reload').value, 10) || 0;
+    sendMsg(mode === 'frame' ? { type: 'frame', url, reloadSeconds: reload } : { type: 'navigate', url, mode: 'page' });
+  };
+  document.getElementById('ping').onclick = () => sendMsg({ type: 'ping' });
+  document.getElementById('idle').onclick = () => sendMsg({ type: 'idle', text: 'Ready' });
+  document.getElementById('stop').onclick = () => sendMsg({ type: 'stop' });
+</script>
+<script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
+</body>
+</html>

@@ -2,160 +2,222 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Sonos MetaManage – Now Playing</title>
+<title>PeteCast</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  PeteCast — a general-purpose Google Cast receiver (CAF v3).
+  https://github.com/C-i-X-e-l/petecast  ·  MIT licence  ·  see PROTOCOL.md
+
+  What it can do:
+    • navigate  – open any http(s) page full-screen (top-level navigation; works for LAN http pages)
+    • frame     – show an https page inside the receiver (stays a Cast app; periodic reload)
+    • nowplaying– built-in Now Playing screen fed over the Cast channel (works without a web server)
+    • DashCast-compatible: senders written for DashCast (pychromecast DashCastController, catt
+      cast_site, …) work unchanged — just point them at PeteCast's App ID.
+
+  Inspired by DashCast (github.com/stestagg/dashcast, MIT), rebuilt on the current Cast
+  Application Framework instead of the retired 2014 receiver library.
+-->
 <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 <style>
   :root {
-    --fg: #f5f5f7;
-    --fg-dim: rgba(245, 245, 247, 0.62);
-    --accent: #e8b04a;
+    /* Sonos MetaManage palette */
+    --navy-0: #0B1120;
+    --navy-1: #0F172A;
+    --navy-2: #1E293B;
+    --amber: #F59E0B;
+    --amber-2: #FFD54F;
+    --fg: #F8FAFC;
+    --fg-dim: rgba(248, 250, 252, 0.62);
     --track: rgba(255, 255, 255, 0.18);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
     width: 100%; height: 100%;
-    background: #000; color: var(--fg);
+    background: var(--navy-0); color: var(--fg);
     font-family: "Google Sans", Roboto, "Helvetica Neue", Arial, sans-serif;
     overflow: hidden;
   }
+  .view { position: fixed; inset: 0; opacity: 0; pointer-events: none; transition: opacity 0.6s ease; }
+  .view.active { opacity: 1; pointer-events: auto; }
 
-  /* Blurred album-art backdrop */
+  /* ---------- Idle / splash ---------- */
+  #idle {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4vh;
+    background: radial-gradient(ellipse at 50% 40%, var(--navy-2), var(--navy-1) 55%, var(--navy-0));
+  }
+  #idle .mark { width: 18vh; height: 18vh; }
+  #idle .word { font-size: 9vh; font-weight: 700; letter-spacing: -0.02em; }
+  #idle .word span { color: var(--amber); }
+  #idle .status { font-size: 3vh; color: var(--fg-dim); min-height: 4vh; }
+  #idle .dots::after { content: ''; animation: dots 1.4s steps(4) infinite; }
+  @keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+
+  /* ---------- Frame (https pages) ---------- */
+  #frame { background: #000; }
+  #frame iframe { width: 100%; height: 100%; border: 0; background: #000; }
+
+  /* ---------- Now Playing ---------- */
+  #nowplaying { background: var(--navy-0); }
   #backdrop {
-    position: fixed; inset: -8%;
+    position: absolute; inset: -8%;
     background-size: cover; background-position: center;
     filter: blur(60px) saturate(1.3) brightness(0.45);
-    transition: background-image 1s ease, opacity 1s ease;
-    opacity: 0;
+    opacity: 0; transition: opacity 1s ease;
   }
   #backdrop.show { opacity: 1; }
   #shade {
-    position: fixed; inset: 0;
-    background: radial-gradient(ellipse at 30% 50%, rgba(0,0,0,0.1), rgba(0,0,0,0.65));
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at 30% 50%, rgba(11,17,32,0.1), rgba(11,17,32,0.7));
   }
-
-  /* Layout: TV safe area is ~5% on each edge */
   #stage {
-    position: relative; z-index: 1;
-    height: 100%;
-    padding: 6vh 6vw;
+    position: relative; z-index: 1; height: 100%;
+    padding: 6vh 6vw;                     /* TV safe area */
     display: flex; align-items: center; gap: 5vw;
-    transition: opacity 1.5s ease, transform 30s linear;
+    transition: opacity 1.5s ease;
   }
   #stage.dimmed { opacity: 0.35; }
-
   #art-wrap {
-    flex: 0 0 auto;
-    width: min(70vh, 42vw); aspect-ratio: 1 / 1;
-    border-radius: 2vh; overflow: hidden;
-    box-shadow: 0 3vh 8vh rgba(0,0,0,0.6);
-    background: #1b1b1f;
-    position: relative;
+    flex: 0 0 auto; width: min(70vh, 42vw); aspect-ratio: 1 / 1;
+    border-radius: 2vh; overflow: hidden; position: relative;
+    box-shadow: 0 3vh 8vh rgba(0,0,0,0.6); background: var(--navy-2);
   }
-  #art {
-    width: 100%; height: 100%; object-fit: cover; display: block;
-    opacity: 0; transition: opacity 0.8s ease;
-  }
+  #art { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity 0.8s ease; }
   #art.show { opacity: 1; }
-  /* Vinyl fallback, like SonosAlbumArt's placeholder */
   #vinyl {
-    position: absolute; inset: 12%;
-    border-radius: 50%;
+    position: absolute; inset: 12%; border-radius: 50%;
     background:
-      radial-gradient(circle, var(--accent) 0 9%, #111 9.5% 11%, transparent 11.5%),
+      radial-gradient(circle, var(--amber) 0 9%, #111 9.5% 11%, transparent 11.5%),
       repeating-radial-gradient(circle, #1a1a1a 0 1.2%, #232323 1.2% 2.4%);
     transition: opacity 0.8s ease;
   }
   #art.show + #vinyl { opacity: 0; }
-
   #meta { flex: 1 1 auto; min-width: 0; }
   #room {
-    font-size: 2.4vh; letter-spacing: 0.25em; text-transform: uppercase;
-    color: var(--accent); margin-bottom: 3vh;
-    display: flex; align-items: center; gap: 1.2vh;
+    font-size: 2.4vh; letter-spacing: 0.25em; text-transform: uppercase; color: var(--amber);
+    margin-bottom: 3vh; display: flex; align-items: center; gap: 1.2vh;
   }
-  #state-dot {
-    width: 1.3vh; height: 1.3vh; border-radius: 50%; background: var(--accent);
-  }
-  #state-dot.paused { background: transparent; border: 0.25vh solid var(--accent); }
-  #title {
-    font-size: 7vh; font-weight: 600; line-height: 1.1;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-  }
-  #artist { font-size: 4vh; margin-top: 2vh; color: var(--fg); opacity: 0.9;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #album { font-size: 3vh; margin-top: 1vh; color: var(--fg-dim);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
+  #state-dot { width: 1.3vh; height: 1.3vh; border-radius: 50%; background: var(--amber); }
+  #state-dot.paused { background: transparent; border: 0.25vh solid var(--amber); }
+  #title { font-size: 7vh; font-weight: 600; line-height: 1.1;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #artist { font-size: 4vh; margin-top: 2vh; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #album { font-size: 3vh; margin-top: 1vh; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #progress { margin-top: 6vh; }
   #bar { height: 0.8vh; border-radius: 0.4vh; background: var(--track); overflow: hidden; }
   #fill { height: 100%; width: 0%; background: var(--fg); border-radius: 0.4vh; }
-  #times {
-    display: flex; justify-content: space-between;
-    margin-top: 1.5vh; font-size: 2.4vh; color: var(--fg-dim);
-    font-variant-numeric: tabular-nums;
-  }
+  #times { display: flex; justify-content: space-between; margin-top: 1.5vh; font-size: 2.4vh;
+    color: var(--fg-dim); font-variant-numeric: tabular-nums; }
   #progress.live #bar, #progress.live #times .total { visibility: hidden; }
-
   #chips { margin-top: 4vh; display: flex; gap: 1.5vh; font-size: 2.2vh; }
-  .chip {
-    padding: 0.8vh 2vh; border-radius: 3vh;
-    border: 0.2vh solid rgba(255,255,255,0.25); color: var(--fg-dim);
-    display: none;
+  .chip { padding: 0.8vh 2vh; border-radius: 3vh; border: 0.2vh solid rgba(255,255,255,0.25);
+    color: var(--fg-dim); display: none; }
+  .chip.on { display: inline-block; border-color: var(--amber); color: var(--amber); }
+  #badge {
+    position: absolute; right: 4vw; bottom: 4vh; z-index: 2;
+    font-size: 1.8vh; letter-spacing: 0.08em; color: rgba(248,250,252,0.35);
   }
-  .chip.on { display: inline-block; border-color: var(--accent); color: var(--accent); }
-
-  /* Waiting screen before the phone sends anything */
-  #waiting {
-    position: fixed; inset: 0; z-index: 2;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3vh;
-    background: #000; transition: opacity 0.8s ease;
-    font-size: 3vh; color: var(--fg-dim);
-  }
-  #waiting.hide { opacity: 0; pointer-events: none; }
-  #waiting .logo { font-size: 5vh; color: var(--fg); font-weight: 600; }
+  #badge span { color: rgba(245,158,11,0.6); }
 </style>
 </head>
 <body>
-  <div id="backdrop"></div>
-  <div id="shade"></div>
+  <!-- Idle / splash -->
+  <section id="idle" class="view active">
+    <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
+      <path d="M14 14V12a4 4 0 0 1 4-4h34a4 4 0 0 1 4 4v32a4 4 0 0 1-4 4H46" fill="none" stroke="#F8FAFC" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M29 19.5 L42 28 L29 36.5 Z" fill="#F59E0B" stroke="#F59E0B" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M8 44a12 12 0 0 1 12 12" fill="none" stroke="#F59E0B" stroke-width="4.6" stroke-linecap="round"/>
+      <path d="M8 34a22 22 0 0 1 22 22" fill="none" stroke="#FFD54F" stroke-width="4.6" stroke-linecap="round"/>
+      <circle cx="10" cy="54" r="3.4" fill="#F59E0B"/>
+    </svg>
+    <div class="word">Pete<span>Cast</span></div>
+    <div class="status" id="status">Ready</div>
+  </section>
 
-  <main id="stage">
-    <div id="art-wrap">
-      <img id="art" alt="">
-      <div id="vinyl"></div>
-    </div>
-    <section id="meta">
-      <div id="room"><span id="state-dot"></span><span id="room-name"></span></div>
-      <div id="title"></div>
-      <div id="artist"></div>
-      <div id="album"></div>
-      <div id="progress">
-        <div id="bar"><div id="fill"></div></div>
-        <div id="times"><span class="elapsed">0:00</span><span class="total">0:00</span></div>
-      </div>
-      <div id="chips">
-        <span class="chip" id="chip-shuffle">Shuffle</span>
-        <span class="chip" id="chip-repeat">Repeat</span>
-      </div>
-    </section>
-  </main>
+  <!-- https page inside the receiver -->
+  <section id="frame" class="view"><iframe id="frame-el" allow="autoplay; fullscreen"></iframe></section>
 
-  <div id="waiting">
-    <div class="logo">Sonos MetaManage</div>
-    <div>Waiting for Now Playing…</div>
-  </div>
+  <!-- Built-in Now Playing -->
+  <section id="nowplaying" class="view">
+    <div id="backdrop"></div>
+    <div id="shade"></div>
+    <main id="stage">
+      <div id="art-wrap"><img id="art" alt=""><div id="vinyl"></div></div>
+      <section id="meta">
+        <div id="room"><span id="state-dot"></span><span id="room-name"></span></div>
+        <div id="title"></div>
+        <div id="artist"></div>
+        <div id="album"></div>
+        <div id="progress">
+          <div id="bar"><div id="fill"></div></div>
+          <div id="times"><span class="elapsed">0:00</span><span class="total">0:00</span></div>
+        </div>
+        <div id="chips">
+          <span class="chip" id="chip-shuffle">Shuffle</span>
+          <span class="chip" id="chip-repeat">Repeat</span>
+        </div>
+      </section>
+    </main>
+    <div id="badge">Pete<span>Cast</span></div>
+  </section>
 
 <script>
-  // Must match NowPlayingCastPublisher.NAMESPACE on the Android side.
-  const NAMESPACE = 'urn:x-cast:cixel.metamanage';
-  // Bump when this file changes; the app can ask for it with {"type":"ping"}.
-  const RECEIVER_VERSION = 2;
-  // Dim the screen after this long paused/stopped (reduces burn-in on OLED TVs).
-  const DIM_AFTER_IDLE_MS = 5 * 60 * 1000;
+  // ===== Identity & protocol (see PROTOCOL.md) =====
+  const PETECAST = { name: 'PeteCast', version: 4 };
+  const NS_PETECAST = 'urn:x-cast:petecast';
+  /** Sonos MetaManage's original channel; same commands as NS_PETECAST. Kept for older app builds. */
+  const NS_LEGACY = 'urn:x-cast:cixel.metamanage';
+  /** DashCast channels: senders built for DashCast work as-is (message {url, force, reload, reload_time}). */
+  const NS_DASHCAST = ['urn:x-cast:com.madmod.dashcast', 'urn:x-cast:es.offd.dashcast'];
+
+  const DIM_AFTER_IDLE_MS = 5 * 60 * 1000;   // dim Now Playing when paused a while (OLED burn-in)
+  const NO_SENDER_CLOSE_MS = 60 * 1000;      // close idle / Now Playing views when no sender remains
 
   const $ = (id) => document.getElementById(id);
-  const el = {
+  const views = { idle: $('idle'), frame: $('frame'), nowplaying: $('nowplaying') };
+  let currentView = 'idle';
+  function show(name) {
+    currentView = name;
+    for (const [k, v] of Object.entries(views)) v.classList.toggle('active', k === name);
+  }
+  function status(text, busy) {
+    $('status').innerHTML = '';
+    $('status').textContent = text;
+    $('status').classList.toggle('dots', !!busy);
+  }
+
+  // ===== navigate / frame =====
+  const isWebUrl = (u) => typeof u === 'string' && /^https?:\/\//i.test(u);
+  let reloadTimer = null;
+
+  /** Top-level navigation. The page replaces PeteCast (so http:// LAN pages are fine). */
+  function navigatePage(url) {
+    if (!isWebUrl(url)) return false;
+    show('idle');
+    status('Opening', true);
+    setTimeout(() => { window.location.href = url; }, 400);
+    return true;
+  }
+
+  /**
+   * Show a page inside PeteCast. PeteCast is served over https, so browsers block http:// in a
+   * frame (mixed content) — those fall back to navigatePage().
+   */
+  function showFrame(url, reloadMs) {
+    if (!isWebUrl(url)) return false;
+    if (/^http:\/\//i.test(url)) return navigatePage(url);
+    if (reloadTimer) { clearInterval(reloadTimer); reloadTimer = null; }
+    const f = $('frame-el');
+    f.src = url;
+    show('frame');
+    if (reloadMs > 0) {
+      reloadTimer = setInterval(() => { f.src = url; }, Math.max(reloadMs, 5000));
+    }
+    return true;
+  }
+
+  // ===== Now Playing =====
+  const np = {
     backdrop: $('backdrop'), stage: $('stage'), art: $('art'),
     roomName: $('room-name'), stateDot: $('state-dot'),
     title: $('title'), artist: $('artist'), album: $('album'),
@@ -163,125 +225,140 @@
     elapsed: document.querySelector('#times .elapsed'),
     total: document.querySelector('#times .total'),
     shuffle: $('chip-shuffle'), repeat: $('chip-repeat'),
-    waiting: $('waiting'),
   };
-
-  let state = null;          // last "state" message
-  let receivedAt = 0;        // local time the state arrived (avoids phone/TV clock skew)
-  let currentArtKey = null;  // trackKey of the art currently shown
-  let idleSince = null;
+  let state = null, receivedAt = 0, currentArtKey = null, idleSince = null;
 
   function fmt(ms) {
     if (!isFinite(ms) || ms < 0) ms = 0;
     const s = Math.floor(ms / 1000);
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-    const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
-    return (h > 0 ? h + ':' : '') + mm + ':' + String(sec).padStart(2, '0');
+    return (h > 0 ? h + ':' : '') + (h > 0 ? String(m).padStart(2, '0') : String(m)) + ':' + String(sec).padStart(2, '0');
   }
-
-  function isPlaying() {
-    return state && (state.transportState === 'PLAYING' || state.transportState === 'TRANSITIONING');
-  }
-
-  function currentPositionMs() {
+  const isPlaying = () => state && (state.transportState === 'PLAYING' || state.transportState === 'TRANSITIONING');
+  function positionMs() {
     if (!state) return 0;
     let pos = state.positionMs || 0;
-    if (isPlaying()) pos += Date.now() - receivedAt;
+    if (isPlaying()) pos += Date.now() - receivedAt;   // local clock: no phone/TV skew
     if (state.durationMs > 0) pos = Math.min(pos, state.durationMs);
     return pos;
   }
-
   function applyState(msg) {
     const trackChanged = !state || state.trackKey !== msg.trackKey;
-    state = msg;
-    receivedAt = Date.now();
-
-    el.waiting.classList.add('hide');
-    el.roomName.textContent = msg.room || '';
-    el.title.textContent = msg.title || '';
-    el.artist.textContent = msg.artist || '';
-    el.album.textContent = msg.album || '';
-    el.stateDot.classList.toggle('paused', !isPlaying());
-    el.shuffle.classList.toggle('on', !!msg.shuffle);
-    el.repeat.classList.toggle('on', !!msg.repeat);
-    // Radio / streams have no duration: hide the bar, keep the elapsed counter.
-    el.progress.classList.toggle('live', !(msg.durationMs > 0));
-
+    state = msg; receivedAt = Date.now();
+    show('nowplaying');
+    np.roomName.textContent = msg.room || '';
+    np.title.textContent = msg.title || '';
+    np.artist.textContent = msg.artist || '';
+    np.album.textContent = msg.album || '';
+    np.stateDot.classList.toggle('paused', !isPlaying());
+    np.shuffle.classList.toggle('on', !!msg.shuffle);
+    np.repeat.classList.toggle('on', !!msg.repeat);
+    np.progress.classList.toggle('live', !(msg.durationMs > 0));
     if (trackChanged && currentArtKey !== msg.trackKey) {
-      // Art for the new track arrives in a separate "art" message.
-      el.art.classList.remove('show');
-      el.backdrop.classList.remove('show');
+      np.art.classList.remove('show');
+      np.backdrop.classList.remove('show');
     }
-
     idleSince = isPlaying() ? null : (idleSince || Date.now());
     tick();
   }
-
   function applyArt(msg) {
-    if (state && msg.trackKey !== state.trackKey) return; // stale art for an old track
+    if (state && msg.trackKey !== state.trackKey) return;   // stale art for an old track
     const url = 'data:' + (msg.mime || 'image/jpeg') + ';base64,' + msg.data;
     currentArtKey = msg.trackKey;
-    el.art.onload = () => el.art.classList.add('show');
-    el.art.src = url;
-    el.backdrop.style.backgroundImage = 'url("' + url + '")';
-    el.backdrop.classList.add('show');
+    np.art.onload = () => np.art.classList.add('show');
+    np.art.src = url;
+    np.backdrop.style.backgroundImage = 'url("' + url + '")';
+    np.backdrop.classList.add('show');
   }
-
-  function clearAll() {
+  function clearNowPlaying() {
     state = null; currentArtKey = null; idleSince = null;
-    el.art.classList.remove('show');
-    el.backdrop.classList.remove('show');
-    el.waiting.classList.remove('hide');
+    np.art.classList.remove('show');
+    np.backdrop.classList.remove('show');
+    show('idle');
+    status('Ready');
   }
-
   function tick() {
     if (state) {
-      const pos = currentPositionMs();
-      el.elapsed.textContent = fmt(pos);
-      el.total.textContent = fmt(state.durationMs);
-      el.fill.style.width = state.durationMs > 0 ? (100 * pos / state.durationMs) + '%' : '0%';
+      const pos = positionMs();
+      np.elapsed.textContent = fmt(pos);
+      np.total.textContent = fmt(state.durationMs);
+      np.fill.style.width = state.durationMs > 0 ? (100 * pos / state.durationMs) + '%' : '0%';
     }
-    el.stage.classList.toggle('dimmed', !!idleSince && Date.now() - idleSince > DIM_AFTER_IDLE_MS);
+    np.stage.classList.toggle('dimmed', !!idleSince && Date.now() - idleSince > DIM_AFTER_IDLE_MS);
   }
   setInterval(tick, 500);
 
-  // --- Cast receiver wiring -------------------------------------------------
+  // ===== Cast wiring =====
   const context = cast.framework.CastReceiverContext.getInstance();
+  const parse = (d) => (typeof d === 'string' ? JSON.parse(d) : d) || {};
 
-  context.addCustomMessageListener(NAMESPACE, (event) => {
-    const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+  function reply(ns, senderId, obj) {
+    try { context.sendCustomMessage(ns, senderId, obj); } catch (e) { /* sender may be gone */ }
+  }
+
+  /** PeteCast commands (also accepted on the legacy MetaManage channel). */
+  function handlePeteCast(ns, event) {
+    const msg = parse(event.data);
     switch (msg.type) {
-      // Messages mode: the phone pushes everything over the Cast channel (reliable on Nest Hubs).
+      case 'navigate':
+        if ((msg.mode || 'page') === 'frame') showFrame(msg.url, (msg.reloadSeconds || 0) * 1000);
+        else navigatePage(msg.url);
+        break;
+      case 'frame':
+        showFrame(msg.url, (msg.reloadSeconds || 0) * 1000);
+        break;
       case 'state': applyState(msg); break;
       case 'art':   applyArt(msg);   break;
-      case 'clear': clearAll();      break;
-
-      // Close this receiver (returns the device to its home screen).
-      case 'stop':  context.stop();  break;
-
-      // Navigate mode: open the phone-served page full-screen, DashCast-style. Kept so the
-      // app can use the same page-polling flow on devices that allow it, without republishing.
-      case 'navigate':
-        if (typeof msg.url === 'string' && /^http:\/\//.test(msg.url)) {
-          el.waiting.querySelector('div:last-child').textContent = 'Opening Now Playing…';
-          setTimeout(() => { window.location.href = msg.url; }, 300);
-        }
+      case 'clear': clearNowPlaying(); break;
+      case 'idle':
+        show('idle'); status(msg.text || 'Ready');
         break;
-
-      // Lets the app check which receiver version is deployed.
+      case 'stop':
+        context.stop();
+        break;
       case 'ping':
-        context.sendCustomMessage(NAMESPACE, event.senderId,
-          { type: 'pong', version: RECEIVER_VERSION, modes: ['messages', 'navigate'] });
+        reply(ns, event.senderId, {
+          type: 'pong', app: PETECAST.name, version: PETECAST.version,
+          modes: ['navigate', 'frame', 'nowplaying', 'dashcast'],
+        });
         break;
     }
+  }
+
+  /** DashCast-compatible handler: {url, force, reload, reload_time}; echoes the message like DashCast. */
+  function handleDashCast(ns, event) {
+    const msg = parse(event.data);
+    if (msg.force) navigatePage(msg.url);
+    else showFrame(msg.url, msg.reload ? parseInt(msg.reload_time, 10) || 0 : 0);
+    reply(ns, event.senderId, msg);
+  }
+
+  context.addCustomMessageListener(NS_PETECAST, (e) => handlePeteCast(NS_PETECAST, e));
+  context.addCustomMessageListener(NS_LEGACY, (e) => handlePeteCast(NS_LEGACY, e));
+  NS_DASHCAST.forEach((ns) => context.addCustomMessageListener(ns, (e) => handleDashCast(ns, e)));
+
+  // Close when nobody is connected any more — but only for views that need a sender
+  // (idle / Now Playing). Frame pages (dashboards) keep running, as with DashCast.
+  let noSenderTimer = null;
+  context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, () => {
+    if (noSenderTimer) { clearTimeout(noSenderTimer); noSenderTimer = null; }
+  });
+  context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, () => {
+    if (context.getSenders().length > 0 || noSenderTimer) return;
+    noSenderTimer = setTimeout(() => {
+      noSenderTimer = null;
+      if (context.getSenders().length === 0 && currentView !== 'frame') context.stop();
+    }, NO_SENDER_CLOSE_MS);
   });
 
   const options = new cast.framework.CastReceiverOptions();
-  options.customNamespaces = { [NAMESPACE]: cast.framework.system.MessageType.JSON };
-  options.disableIdleTimeout = true;   // we never play media, so don't let the receiver time out
-  options.skipPlayersLoad = true;      // no video/audio player needed
-  options.statusText = 'Sonos MetaManage';
-  options.maxInactivity = 60;          // tolerate a phone that briefly misses heartbeats (default is 10 s)
+  const JSON_T = cast.framework.system.MessageType.JSON;
+  options.customNamespaces = { [NS_PETECAST]: JSON_T, [NS_LEGACY]: JSON_T };
+  NS_DASHCAST.forEach((ns) => { options.customNamespaces[ns] = JSON_T; });
+  options.disableIdleTimeout = true;   // no media playback: don't let the receiver time out
+  options.skipPlayersLoad = true;      // no media player needed
+  options.maxInactivity = 60;          // tolerate brief sender heartbeat gaps (default 10 s)
+  options.statusText = 'PeteCast';
   context.start(options);
 </script>
 </body>
